@@ -76,13 +76,22 @@ h1,h2,h3{margin:0}
 .word .w{font-family:var(--serif);font-size:20px;font-weight:900;line-height:1.25}
 .word.red{border-left:5px solid var(--red)} .word.blue{border-left:5px solid var(--blue)}
 
-.score{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.score{display:grid;grid-template-columns:1fr;gap:8px}
 .sc{border-radius:10px;padding:8px 10px;background:var(--bg2);border:1px solid var(--line)}
 .sc.red{border-left:4px solid var(--red)} .sc.blue{border-left:4px solid var(--blue)}
-.tk{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-top:3px}
-.pip{width:14px;height:14px;border-radius:50%;border:2px solid var(--dim);display:inline-block}
-.pip.w.on{background:#fff;border-color:#fff}
-.pip.k.on{background:#000;border-color:#888}
+.tk{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);margin-top:6px;white-space:nowrap}
+.sc .hd{display:flex;align-items:center;gap:8px}
+.sc .flags{display:flex;gap:6px;flex-wrap:wrap}
+.tk .cnt{margin-left:auto;font-family:var(--mono);font-weight:800;color:var(--dim)}
+.pip{width:22px;height:22px;border-radius:50%;border:2px dashed var(--dim);display:inline-grid;place-items:center;
+  font-size:13px;font-weight:900;line-height:1;color:#fff;flex:none}
+.pip.w.on{background:var(--ok);border:2px solid var(--ok);box-shadow:0 0 10px -2px var(--ok)}
+.pip.k.on{background:var(--bad);border:2px solid var(--bad);box-shadow:0 0 10px -2px var(--bad)}
+.tk.hotw .cnt{color:var(--ok)} .tk.hotk .cnt{color:var(--bad)}
+.danger{margin-top:6px;font-size:11px;font-weight:700;color:var(--bad);background:rgba(224,96,90,.12);border-radius:5px;padding:2px 6px}
+.chance{margin-top:6px;font-size:11px;font-weight:700;color:var(--ok);background:rgba(79,191,127,.12);border-radius:5px;padding:2px 6px}
+.legend{display:flex;align-items:center;gap:6px;margin-top:4px}
+.legend .pip{width:18px;height:18px;font-size:11px}
 .plist .mem{font-size:13px}
 
 .stage{min-height:230px}
@@ -111,6 +120,11 @@ h1,h2,h3{margin:0}
 .pick.ro button{cursor:default}
 .ans{font-family:var(--mono);font-size:18px;font-weight:800;letter-spacing:.15em}
 .lockbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:6px}
+.steps{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.stp{font-size:13px;padding:3px 10px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+.stp.on.red{background:var(--red);border-color:var(--red);color:#fff}
+.stp.on.blue{background:var(--blue);border-color:var(--blue);color:#fff}
+.stp.done{color:var(--ok);border-color:var(--ok)}
 
 .rv{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .rvc{border-radius:10px;padding:10px 12px;background:var(--bg2);border:1px solid var(--line)}
@@ -213,7 +227,8 @@ td div:last-child{border-bottom:0}
     <div class="card"><h3 id="wordsTitle">我方关键词</h3><div class="words" id="myWords"></div>
       <p class="hint" style="margin:8px 0 0">只有你的队友能看到这 4 个词。</p></div>
     <div class="card"><h3>比分</h3><div class="score" id="score"></div>
-      <p class="hint" style="margin:8px 0 0">○ 拦截标记：拿到 2 个获胜<br>● 失误标记：吃到 2 个失败</p></div>
+      <div class="hint" style="margin-top:8px"><div class="legend"><span class="pip w on">✓</span>拦截标记：拿到 2 个获胜</div>
+      <div class="legend"><span class="pip k on">✗</span>失误标记：吃到 2 个失败</div></div></div>
     <div class="card plist"><h3>玩家</h3><div id="plist"></div></div>
   </aside>
 
@@ -329,10 +344,10 @@ function renderLobby(){
   document.querySelectorAll('[data-team]').forEach(b=>b.onclick=()=>act('team',{team:b.dataset.team||null}));
 
   const st = S.settings;
-  $('#settings').innerHTML = `<b>提示计时</b>
+  $('#settings').innerHTML = `<b>计时</b>
     <label><input type="checkbox" id="tOn" ${st.timer?'checked':''} ${host?'':'disabled'}> 开启</label>
     <select id="tSec" ${host&&st.timer?'':'disabled'}>${[30,60,90,120].map(s=>`<option value="${s}" ${st.seconds===s?'selected':''}>${s} 秒</option>`).join('')}</select>
-    <span class="hint">一队交完提示后，另一队的加密者要在限定时间内写完${host?'':'（由房主设置）'}</span>`;
+    <span class="hint">加密和破译阶段都生效：一队先提交后，另一队要在限定时间内完成${host?'':'（由房主设置）'}</span>`;
   if(host){ const send=()=>act('settings',{timer:$('#tOn').checked, seconds:Number($('#tSec').value)});
     $('#tOn').onchange=send; $('#tSec').onchange=send; }
 
@@ -351,7 +366,7 @@ function renderGame(){
   const my=S.myTeam, T=S.teams[my], O=S.teams[OT(my)], enc = T.encoder===S.you;
   $('#gCode').textContent = S.code;
   $('#gRound').innerHTML = `第 <b>${S.round}</b> / ${S.maxRounds} 轮`;
-  $('#gPhase').innerHTML = {clue:'<b>加密阶段</b>', guess:'<b>破译 / 拦截</b>', reveal:'<b>揭晓</b>', end:'<b>游戏结束</b>'}[S.phase];
+  $('#gPhase').innerHTML = {clue:'<b>加密阶段</b>', guess:`<b>破译：${TN[S.cur]||''}的密码</b>`, reveal:'<b>揭晓</b>', end:'<b>游戏结束</b>'}[S.phase];
   $('#abortBtn').hidden = S.host!==S.you || S.phase==='end';
 
   // 关键词
@@ -359,9 +374,12 @@ function renderGame(){
   $('#myWords').innerHTML = T.words.map((w,i)=>`<div class="word ${my}"><div class="no">#${i+1}</div><div class="w">${esc(w)}</div></div>`).join('');
 
   // 比分
-  const pips = (n,cls) => [0,1].map(i=>`<span class="pip ${cls} ${i<n?'on':''}"></span>`).join('');
-  $('#score').innerHTML = ['red','blue'].map(t=>`<div class="sc ${t}"><b class="${t}">${TN[t]}</b>${t===my?' <span class="muted small">我方</span>':''}
-    <div class="tk">拦截 ${pips(S.teams[t].tokens.intercept,'w')}</div><div class="tk">失误 ${pips(S.teams[t].tokens.miss,'k')}</div></div>`).join('');
+  const pips = (n,cls,sym) => [0,1].map(i=>`<span class="pip ${cls} ${i<n?'on':''}">${i<n?sym:''}</span>`).join('');
+  $('#score').innerHTML = ['red','blue'].map(t=>{ const k=S.teams[t].tokens;
+    return `<div class="sc ${t}"><div class="hd"><b class="${t}">${TN[t]}</b>${t===my?'<span class="muted small">我方</span>':''}</div>
+    <div class="tk ${k.intercept?'hotw':''}">拦截 ${pips(k.intercept,'w','✓')}<span class="cnt">${k.intercept}/2</span></div>
+    <div class="tk ${k.miss?'hotk':''}">失误 ${pips(k.miss,'k','✗')}<span class="cnt">${k.miss}/2</span></div>
+    <div class="flags">${S.phase!=='end' && k.miss===1 ? '<div class="danger">再失误 1 次就输</div>' : ''}${S.phase!=='end' && k.miss>=2 ? '<div class="danger">已失误 2 次，本轮结束后判定</div>' : ''}${S.phase!=='end' && k.intercept===1 ? '<div class="chance">再拦截 1 次就赢</div>' : ''}${S.phase!=='end' && k.intercept>=2 ? '<div class="chance">已拦截 2 次，本轮结束后判定</div>' : ''}</div></div>`; }).join('');
 
   // 玩家
   $('#plist').innerHTML = ['red','blue'].map(t=>`<div style="margin-bottom:6px"><div class="small ${t}" style="font-weight:700">${TN[t]}</div>`+
@@ -391,7 +409,7 @@ function clueHTML(T,O,enc){
   if(!enc){
     return `<h3 style="font-size:18px;margin-bottom:6px">加密阶段</h3>
       <p>本轮我方加密者是 <b>${pName(T.encoder)}</b>${T.cluesIn?'，提示已经交了 ✓':'，正在根据密码写 3 条提示…'}</p>
-      <p class="hint">等两队都交完提示，就进入破译阶段。可以先在右边的队内频道里讨论。</p>${oStatus}`;
+      <p class="hint">两队都交完提示后，会逐个处理两队的密码：先处理${TN[S.round%2===1?'red':'blue']}的，再处理${TN[S.round%2===1?'blue':'red']}的。</p>${oStatus}`;
   }
   if(T.cluesIn) return `<h3 style="font-size:18px;margin-bottom:6px">提示已提交 ✓</h3><p class="muted">等待对方加密者…</p>${oStatus}`;
   return `<h3 style="font-size:18px;margin-bottom:4px">你是本轮加密者</h3>
@@ -407,32 +425,49 @@ function picker(kind, idx, val, editable, all){
   const dup = val && all.filter(x=>x===val).length>1;
   return `<div class="pick ${editable?'':'ro'}">${[1,2,3,4].map(n=>`<button ${editable?`data-pk="${kind}" data-i="${idx}" data-n="${n}"`:'disabled'} class="${val===n?(dup?'dup':'on'):''}">${n}</button>`).join('')}</div>`;
 }
+const fmt = a => a.map(x=>x||'?').join('-');
+// 一个密码的结算卡片（揭晓页和破译中“上一个密码”共用）
+function resultCard(t, r){
+  const o=OT(t);
+  return `<div class="rvc ${t}"><div class="row">${tag(t)}<span class="muted small">加密者 ${pName(r.encoder)}</span></div>
+    ${r.clues.map((c,i)=>`<div class="cl"><b>${r.code[i]}</b><span>${esc(c)}</span></div>`).join('')}
+    <div class="res">密码 <span class="ans">${r.code.join('-')}</span></div>
+    <div class="res">${TN[t]}破译 ${fmt(r.own)} → ${r.ownOk?'<span class="ok">✓ 正确</span>':'<span class="no">✗ 失误标记 +1</span>'}</div>
+    <div class="res">${r.intercept?`${TN[o]}拦截 ${fmt(r.intercept)} → ${r.interceptOk?`<span class="no">拦截成功！${TN[o]}拦截标记 +1</span>`:'<span class="ok">拦截失败</span>'}`:'<span class="muted">第一轮不能拦截</span>'}</div></div>`;
+}
 function guessHTML(T,O,enc){
-  const my=S.myTeam, other=OT(my), A=T.answers, ed = A.editor ? `<span class="hint">最后修改：${pName(A.editor)}</span>` : '';
-  const canOwn = !enc && !T.locked, canIc = !T.locked && S.round>=2;
-  const own = `<div class="gblock ${my}"><h4>${tag(my)} 破译我方密码 ${enc?'<span class="hint">（你是加密者，这次不能参与）</span>':''}</h4>
-    ${T.clues.map((c,i)=>`<div class="gline"><span class="i">${i+1}</span><span class="c">${esc(c)}</span>${picker('own',i,A.own[i],canOwn,A.own)}</div>`).join('')}
-    ${enc?`<p class="hint" style="margin:6px 0 0">正确答案：<span class="ans">${T.code.join('-')}</span>（队友看不到）</p>`:''}</div>`;
-  const ic = `<div class="gblock ${other}"><h4>${tag(other)} 拦截对方密码</h4>
-    ${T && S.round<2 ? '<p class="hint" style="margin:0 0 6px">第一轮还没有任何线索，不能拦截。先看看对方的提示，记在心里。</p>':''}
-    ${O.clues.map((c,i)=>`<div class="gline"><span class="i">${i+1}</span><span class="c">${esc(c)}</span>${S.round>=2?picker('intercept',i,A.intercept[i],canIc,A.intercept):''}</div>`).join('')}
-    ${S.round>=2?'<p class="hint" style="margin:6px 0 0">参考下方对方的情报记录表，猜猜每条提示对应对方的几号词。</p>':''}</div>`;
-  const lock = T.locked
-    ? `<div class="lockbar"><span class="ok">✓ 我方已锁定答案</span><span class="muted">等待${TN[other]}${O.locked?'…':'锁定…'}</span><span class="sp"></span>${enc?'':'<button class="ghost" id="unlockBtn">取消锁定</button>'}</div>`
-    : `<div class="lockbar">${enc?'<span class="hint">由队友锁定答案</span>':'<button class="gold" id="lockBtn">锁定答案</button>'}${ed}<span class="sp"></span><span class="muted small">${TN[other]}：${O.locked?'已锁定 ✓':'讨论中…'}</span></div>`;
-  return own + ic + lock + `<p class="hint" style="margin:8px 0 0">答案全队共享，任何队友都能修改，商量好后由一人锁定。两队都锁定后同时揭晓。</p>`;
+  const my=S.myTeam, cur=S.cur, X=S.teams[cur], decoding = my===cur, r1 = S.round<2;
+  const first = S.round%2===1 ? 'red' : 'blue', second = OT(first), step = cur===first ? 1 : 2;
+  const A=T.answers, kind = decoding ? 'own' : 'intercept';
+  const canPlay = decoding ? !enc : !r1;
+  const editable = canPlay && !T.locked;
+  const ed = A.editor && canPlay ? `<span class="hint">最后修改：${pName(A.editor)}</span>` : '';
+  const steps = `<div class="steps">${[first,second].map((t,i)=>`<span class="stp ${t} ${t===cur?'on':''} ${S.roundRec&&S.roundRec[t]?'done':''}">${i+1}. ${TN[t]}的密码${S.roundRec&&S.roundRec[t]?' ✓':''}</span>`).join('<span class="muted">→</span>')}</div>`;
+  const prev = S.roundRec && S.roundRec[OT(cur)] ? `<p class="muted small" style="margin:0 0 6px">上一个密码的结果</p>${resultCard(OT(cur), S.roundRec[OT(cur)])}<div style="height:12px"></div>` : '';
+  const title = decoding
+    ? `${tag(cur)} 破译我方密码 ${enc?'<span class="hint">（你是加密者，这次不能参与）</span>':''}`
+    : `${tag(cur)} ${r1?'对方的提示':'拦截对方密码'}`;
+  const block = `<div class="gblock ${cur}"><h4>${title}</h4>
+    ${!decoding && r1 ? '<p class="hint" style="margin:0 0 6px">第一轮还没有任何线索，不能拦截。先看看对方的提示，记在心里。</p>':''}
+    ${X.clues.map((c,i)=>`<div class="gline"><span class="i">${i+1}</span><span class="c">${esc(c)}</span>${canPlay||decoding?picker(kind,i,A[kind][i],editable,A[kind]):''}</div>`).join('')}
+    ${decoding&&enc?`<p class="hint" style="margin:6px 0 0">正确答案：<span class="ans">${T.code.join('-')}</span>（队友看不到）</p>`:''}
+    ${!decoding&&!r1?'<p class="hint" style="margin:6px 0 0">参考下方对方的情报记录表，猜猜每条提示对应对方的几号词。</p>':''}</div>`;
+  const otherSide = decoding
+    ? (r1 ? '' : `${TN[OT(my)]}拦截：${O.locked?'已锁定 ✓':'讨论中…'}`)
+    : `${TN[cur]}破译：${O.locked?'已锁定 ✓':'讨论中…'}`;
+  let lock;
+  if(!canPlay) lock = `<div class="lockbar"><span class="muted">${decoding?'由队友破译并锁定答案':`等待${TN[cur]}破译…`}</span><span class="sp"></span><span class="muted small">${decoding?otherSide:''}</span></div>`;
+  else if(T.locked) lock = `<div class="lockbar"><span class="ok">✓ 我方已锁定（不能再修改）</span><span class="sp"></span><span class="muted small">${otherSide}</span></div>`;
+  else lock = `<div class="lockbar"><button class="gold" id="lockBtn">锁定答案</button>${ed}<span class="timer" id="myTimer"></span><span class="sp"></span><span class="muted small">${otherSide}</span></div>
+    ${T.deadline?`<p class="warn" style="margin:6px 0 0">对方已经锁定！时间到会自动锁定你们当前的答案，没选完整的部分算猜错。</p>`:''}`;
+  const tip = canPlay ? '<p class="hint" style="margin:8px 0 0">答案全队共享，任何队友都能修改。商量好后由一人锁定，<b>锁定后不能取消</b>。双方都锁定后公布这个密码。</p>' : '';
+  return steps + prev + block + lock + tip;
 }
 
 function revealHTML(){
   const h = S.history[S.history.length-1];
-  const card = t => { const r=h[t], o=OT(t);
-    return `<div class="rvc ${t}"><div class="row">${tag(t)}<span class="muted small">加密者 ${pName(r.encoder)}</span></div>
-      ${r.clues.map((c,i)=>`<div class="cl"><b>${r.code[i]}</b><span>${esc(c)}</span></div>`).join('')}
-      <div class="res">密码 <span class="ans">${r.code.join('-')}</span></div>
-      <div class="res">${TN[t]}破译 ${r.own.join('-')} → ${r.ownOk?'<span class="ok">✓ 正确</span>':'<span class="no">✗ 失误 +1 ●</span>'}</div>
-      <div class="res">${r.intercept?`${TN[o]}拦截 ${r.intercept.join('-')} → ${r.interceptOk?`<span class="no">拦截成功！${TN[o]} +1 ○</span>`:'<span class="ok">拦截失败</span>'}`:'<span class="muted">第一轮不能拦截</span>'}</div></div>`; };
   const online = S.players.filter(p=>p.online), ready = online.filter(p=>p.ready).length, me=P(S.you);
-  return `<h3 style="font-size:18px;margin-bottom:8px">第 ${h.round} 轮揭晓</h3><div class="rv">${card(S.myTeam)}${card(OT(S.myTeam))}</div>
+  return `<h3 style="font-size:18px;margin-bottom:8px">第 ${h.round} 轮揭晓</h3><div class="rv">${resultCard(S.myTeam,h[S.myTeam])}${resultCard(OT(S.myTeam),h[OT(S.myTeam)])}</div>
     <div class="row" style="margin-top:12px"><button class="gold" id="nextBtn" ${me.ready?'disabled':''}>${me.ready?'已准备，等待其他人…':'看完了，进入下一轮'}</button>
     <span class="muted small">${ready}/${online.length} 人准备</span></div>`;
 }
@@ -473,8 +508,7 @@ function bindStage(T,enc){
     act('answer',{kind, digits:cur});
   });
   const on=(id,f)=>{ const el=$('#'+id); if(el) el.onclick=f; };
-  on('lockBtn', ()=>act('lock'));
-  on('unlockBtn', ()=>act('unlock'));
+  on('lockBtn', ()=>{ if(confirm('锁定后不能再修改，确定锁定这个答案吗？')) act('lock'); });
   on('nextBtn', ()=>act('next'));
   on('againBtn', ()=>act('lobby'));
 }
@@ -503,11 +537,13 @@ $('#chatIn').onkeydown = e=>{ if(e.key==='Enter' && !e.isComposing) sendChat(); 
 
 // ---------- 计时 ----------
 function tick(){
-  if(!S || S.phase!=='clue' || !S.teams){ $('#gTimer').hidden=true; return; }
+  const m0=$('#myTimer');
+  if(!S || !['clue','guess'].includes(S.phase) || !S.teams){ $('#gTimer').hidden=true; if(m0) m0.textContent=''; return; }
   const T=S.teams[S.myTeam];
-  if(!T.deadline || T.cluesIn){ $('#gTimer').hidden=true; const m=$('#myTimer'); if(m) m.textContent=''; return; }
+  const done = S.phase==='clue' ? T.cluesIn : T.locked;
+  if(!T.deadline || done){ $('#gTimer').hidden=true; if(m0) m0.textContent=''; return; }
   const left = Math.max(0, Math.ceil((T.deadline - (Date.now()+offset))/1000));
-  $('#gTimer').hidden=false; $('#gTimer').innerHTML = `我方加密剩余 <b class="timer ${left<=10?'urgent':''}" style="font-size:13px">${left} 秒</b>`;
+  $('#gTimer').hidden=false; $('#gTimer').innerHTML = `我方${S.phase==='clue'?'加密':(S.cur===S.myTeam?'破译':'拦截')}剩余 <b class="timer ${left<=10?'urgent':''}" style="font-size:13px">${left} 秒</b>`;
   const m=$('#myTimer'); if(m){ m.textContent = `剩余 ${left} 秒`; m.classList.toggle('urgent', left<=10); }
 }
 setInterval(tick, 250);
@@ -517,11 +553,12 @@ function showRules(){
   $('#modal').innerHTML = `<h2>规则</h2>
   <p><b>分队：</b>4–8 人，分成红蓝两队，每队 2–4 人。每队有 4 个编号的关键词（#1–#4），只有本队能看到。</p>
   <p><b>每一轮：</b>两队各有一名<b>加密者</b>（队员轮流担任），拿到一个三位密码，例如 <b>3-1-4</b>。加密者按顺序给 3 号、1 号、4 号关键词各写一条提示。</p>
-  <p><b>破译与拦截：</b>两队同时看到双方的提示。本队队员（加密者除外）猜自己的密码；同时全队也可以猜对方的密码来<b>拦截</b>。第一轮不能拦截。</p>
-  <p><b>计分：</b>本队没猜对自己的密码，得一个 ● <b>失误标记</b>；猜中对方的密码，得一个 ○ <b>拦截标记</b>。拦截失败没有惩罚。</p>
+  <p><b>破译与拦截：</b>两队的加密者同时写提示。写完后逐个处理两队的密码：处理 A 队的密码时，A 队队员（加密者除外）破译，B 队全员可以猜这个密码来<b>拦截</b>；公布结果后，再反过来处理 B 队的密码。每轮交换先后顺序。第一轮不能拦截。答案<b>锁定后不能取消</b>。</p>
+  <p><b>计分：</b>本队没猜对自己的密码，得一个 <b class="no">✗ 失误标记</b>；猜中对方的密码，得一个 <b class="ok">✓ 拦截标记</b>。拦截失败没有惩罚。</p>
   <p><b>胜负：</b>先拿到 2 个拦截标记的队获胜；先吃到 2 个失误标记的队失败。如果两队同一轮同时达成，或 8 轮后仍未分出胜负，按“拦截数 − 失误数”比分，相同就是平局。结束时公布两队的关键词。</p>
   <p><b>情报记录表：</b>每轮揭晓后，提示会自动记在对应关键词的那一列。对方的表看不到关键词，只能靠历次提示推理，这正是拦截的关键。</p>
   <p><b>提示规则：</b>提示要和词义相关，不能直接写关键词，也不要用谐音、字数、位置、颜色标记之类的暗号。加密者在本队破译时不要在聊天里给队友额外提示。</p>
+  <p><b>计时（可选）：</b>房主开启后，加密和破译两个阶段都有时间限制。一队先交提示，另一队的加密者开始倒计时，时间到没写完的提示记为“（超时）”；处理每个密码时，破译方和拦截方谁先锁定，另一方就开始倒计时，时间到自动锁定当前答案，没选完整的部分算猜错。</p>
   <p class="muted small">线上讨论请使用右侧的队内频道，避免在语音里被对方听到。</p>
   <p style="text-align:right;margin:0"><button class="gold" id="closeRules">知道了</button></p>`;
   $('#mask').hidden=false; $('#closeRules').onclick=()=>$('#mask').hidden=true;

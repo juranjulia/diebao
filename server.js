@@ -95,26 +95,64 @@ function submitClues(room, t, clues, auto) {
     }, room.settings.seconds * 1000 + 300);
   }
   if (auto) sys(room, t, '时间到！加密者没写完（或含有关键词）的提示自动记为“（超时）”。');
-  if (room.teams.red.clues && room.teams.blue.clues) { clearTimeout(room.timer); room.phase = 'guess'; }
+  if (room.teams.red.clues && room.teams.blue.clues) {
+    clearTimeout(room.timer);
+    room.phase = 'guess';
+    room.roundRec = { round: room.round };
+    // 每轮交换先后顺序：单数轮先处理红队密码，双数轮先处理蓝队
+    startCode(room, room.round % 2 === 1 ? 'red' : 'blue');
+  }
 }
 
-function reveal(room) {
-  const rec = { round: room.round };
-  for (const t of TEAMS) {
-    const T = room.teams[t], O = room.teams[other(t)];
-    const ownOk = same(T.answers.own, T.code);
-    const icpt = room.round >= 2 ? O.answers.intercept : null;
-    const icptOk = room.round >= 2 && same(icpt, T.code);
-    if (!ownOk) T.tokens.miss++;
-    if (icptOk) O.tokens.intercept++;
-    T.code.forEach((d, i) => T.sheet[d - 1].push(T.clues[i]));
-    rec[t] = { encoder: T.encoder, clues: T.clues, code: T.code, own: T.answers.own, ownOk, intercept: icpt, interceptOk: icptOk };
-  }
-  room.history.push(rec);
-  room.phase = 'reveal';
-  for (const p of room.players) p.ready = false;
+// ---------------- 破译 / 拦截：一次只处理一个队的密码 ----------------
+// 处理 X 队密码时：X 队（加密者除外）破译，Y 队全员拦截（第 1 轮没有拦截）
+function startCode(room, t) {
+  room.cur = t;
+  clearTimeout(room.timer);
+  for (const x of TEAMS) { room.teams[x].locked = false; room.teams[x].deadline = 0; }
+  const msg = room.round >= 2 ? `现在处理${TNAME[t]}的密码：${TNAME[t]}破译，${TNAME[other(t)]}拦截。` : `现在处理${TNAME[t]}的密码：${TNAME[t]}破译（第一轮没有拦截）。`;
+  for (const x of TEAMS) sys(room, x, msg);
+}
 
-  // 胜负判定
+// 锁定即最终提交；一方锁定后另一方开始倒计时，时间到自动锁定当前答案
+function lockTeam(room, t, by) {
+  const T = room.teams[t];
+  T.locked = true;
+  T.deadline = 0;
+  sys(room, t, by ? `${by} 锁定了答案。` : '时间到！已自动锁定当前答案，没选完整的部分算猜错。');
+  const X = room.cur, Y = other(X);
+  const need = room.round >= 2 ? [X, Y] : [X];
+  if (need.every(x => room.teams[x].locked)) { clearTimeout(room.timer); return resolveCode(room); }
+  const waiting = need.find(x => !room.teams[x].locked);
+  const W = room.teams[waiting];
+  if (room.settings.timer && !W.deadline) {
+    W.deadline = Date.now() + room.settings.seconds * 1000;
+    clearTimeout(room.timer);
+    const cur = room.cur, rnd = room.round;
+    room.timer = setTimeout(() => {
+      if (room.phase !== 'guess' || room.cur !== cur || room.round !== rnd || W.locked) return;
+      lockTeam(room, waiting, null);
+      broadcast(room);
+    }, room.settings.seconds * 1000 + 300);
+  }
+}
+
+function resolveCode(room) {
+  const t = room.cur, T = room.teams[t], O = room.teams[other(t)];
+  const ownOk = same(T.answers.own, T.code);
+  const icpt = room.round >= 2 ? O.answers.intercept : null;
+  const icptOk = room.round >= 2 && same(icpt, T.code);
+  if (!ownOk) T.tokens.miss++;
+  if (icptOk) O.tokens.intercept++;
+  T.code.forEach((d, i) => T.sheet[d - 1].push(T.clues[i]));
+  room.roundRec[t] = { encoder: T.encoder, clues: T.clues, code: T.code, own: T.answers.own, ownOk, intercept: icpt, interceptOk: icptOk };
+  if (!room.roundRec[other(t)]) return startCode(room, other(t));
+
+  // 两个密码都处理完：本轮揭晓，判定胜负
+  room.history.push(room.roundRec);
+  room.phase = 'reveal';
+  room.cur = null;
+  for (const p of room.players) p.ready = false;
   const r = room.teams.red, b = room.teams.blue;
   const redWin = r.tokens.intercept >= 2 || b.tokens.miss >= 2;
   const blueWin = b.tokens.intercept >= 2 || r.tokens.miss >= 2;
@@ -146,11 +184,12 @@ function stateFor(room, me) {
     teams[t] = {
       tokens: T.tokens, sheet: T.sheet, encoder: T.encoder,
       words: mine || ended ? T.words : null,
-      code: (enc && ['clue', 'guess'].includes(room.phase)) || ['reveal', 'end'].includes(room.phase) ? T.code : null,
+      code: (enc && ['clue', 'guess'].includes(room.phase)) || ['reveal', 'end'].includes(room.phase) || (room.phase === 'guess' && room.roundRec[t]) ? T.code : null,
       cluesIn: !!T.clues,
-      clues: room.phase === 'clue' ? null : T.clues,
+      // 提示按顺序公开：正在处理或已经处理过的密码才显示提示
+      clues: ['reveal', 'end'].includes(room.phase) || (room.phase === 'guess' && (room.cur === t || room.roundRec[t])) ? T.clues : null,
       draft: enc && room.phase === 'clue' ? T.draft : null,
-      deadline: room.phase === 'clue' ? T.deadline : 0,
+      deadline: ['clue', 'guess'].includes(room.phase) ? T.deadline : 0,
       answers: mine ? T.answers : null,
       locked: T.locked,
     };
@@ -158,6 +197,8 @@ function stateFor(room, me) {
   return {
     code: room.code, phase: room.phase, host: room.hostId, you: me.id, myTeam: me.team,
     settings: room.settings, round: room.round, maxRounds: MAX_ROUNDS, now: Date.now(),
+    cur: room.phase === 'guess' ? room.cur : null,
+    roundRec: room.phase === 'guess' ? room.roundRec : null,
     players: room.players.map(p => ({ id: p.id, name: p.name, team: p.team, online: p.clients.size > 0, ready: p.ready })),
     teams: room.teams ? teams : null,
     history: room.history || [],
@@ -223,32 +264,32 @@ function act(room, p, a) {
       return submitClues(room, p.team, c);
     }
     case 'answer': {
-      if (room.phase !== 'guess' || !T) fail('现在不是猜测阶段');
-      if (T.locked) fail('你们队已经锁定答案了');
+      if (room.phase !== 'guess' || !T) fail('现在不是破译阶段');
+      if (T.locked) fail('你们已经锁定答案了');
+      const decoding = p.team === room.cur;
       const kind = a.kind === 'intercept' ? 'intercept' : 'own';
-      if (kind === 'own' && T.encoder === p.id) fail('加密者不能参与本队破译，可以帮忙拦截对方');
+      if (kind === 'own' && !decoding) fail(`现在处理的是${TNAME[room.cur]}的密码，你们这次负责拦截`);
+      if (kind === 'intercept' && decoding) fail('现在轮到你们破译本队密码');
+      if (kind === 'own' && T.encoder === p.id) fail('加密者不能参与本队破译');
       if (kind === 'intercept' && room.round < 2) fail('第一轮不能拦截');
       T.answers[kind] = digits(a.digits);
       T.answers.editor = p.id;
       return;
     }
     case 'lock': {
-      if (room.phase !== 'guess' || !T) fail('现在不是猜测阶段');
+      if (room.phase !== 'guess' || !T) fail('现在不是破译阶段');
       if (T.locked) return;
-      if (T.encoder === p.id) fail('请让本队破译者来锁定答案');
-      if (!complete(T.answers.own)) fail('先把破译本队密码的三位数选完整（三个数字不能重复）');
-      if (room.round >= 2 && !complete(T.answers.intercept)) fail('先把拦截对方的三位数选完整（三个数字不能重复）');
-      T.locked = true;
-      sys(room, p.team, `${p.name} 锁定了答案。`);
-      if (room.teams.red.locked && room.teams.blue.locked) reveal(room);
-      return;
+      if (p.team === room.cur) {
+        if (T.encoder === p.id) fail('请让本队破译者来锁定答案');
+        if (!complete(T.answers.own)) fail('先把三位数选完整（三个数字不能重复）');
+      } else {
+        if (room.round < 2) fail('第一轮不能拦截');
+        if (!complete(T.answers.intercept)) fail('先把拦截的三位数选完整（三个数字不能重复）');
+      }
+      return lockTeam(room, p.team, p.name);
     }
     case 'unlock':
-      if (room.phase !== 'guess' || !T || !T.locked) return;
-      if (T.encoder === p.id) fail('请让本队破译者来操作');
-      T.locked = false;
-      sys(room, p.team, `${p.name} 取消了锁定。`);
-      return;
+      fail('锁定后不能取消');
     case 'next': {
       if (room.phase !== 'reveal') return;
       p.ready = true;
@@ -319,7 +360,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/create') {
       const p = newPlayer(b.name);
       const room = { code: newCode(), hostId: p.id, players: [p], phase: 'lobby', settings: { timer: false, seconds: 60 },
-        teams: null, chat: null, history: [], round: 0, result: null, seq: 0, timer: null, touched: Date.now() };
+        teams: null, chat: null, history: [], round: 0, result: null, cur: null, roundRec: null, seq: 0, timer: null, touched: Date.now() };
       rooms.set(room.code, room);
       return json(res, 200, { code: room.code, id: p.id, token: p.token });
     }
