@@ -225,7 +225,7 @@ td div:last-child{border-bottom:0}
   <aside class="col left">
     <div class="top"><h2>密电对决</h2></div>
     <div class="card"><h3 id="wordsTitle">我方关键词</h3><div class="words" id="myWords"></div>
-      <p class="hint" style="margin:8px 0 0">只有你的队友能看到这 4 个词。</p></div>
+      <p class="hint" style="margin:8px 0 0" id="wordsHint">只有你的队友能看到这 4 个词。</p></div>
     <div class="card"><h3>比分</h3><div class="score" id="score"></div>
       <div class="hint" style="margin-top:8px"><div class="legend"><span class="pip w on">✓</span>拦截标记：拿到 2 个获胜</div>
       <div class="legend"><span class="pip k on">✗</span>失误标记：吃到 2 个失败</div></div></div>
@@ -279,7 +279,7 @@ function toast(t){ const el=$('#toast'); el.textContent=t; el.hidden=false; clea
 async function api(path, body){
   const r = await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   let j={}; try{ j=await r.json(); }catch(e){}
-  if(!r.ok) throw new Error(j.error||'网络出错，请重试');
+  if(!r.ok){ const e=new Error(j.error||'网络出错，请重试'); e.data=j; throw e; }
   return j;
 }
 async function act(type, extra){
@@ -297,7 +297,12 @@ $('#createBtn').onclick = async()=>{ const n=needName(); if(!n) return; try{ ent
 $('#joinBtn').onclick = async()=>{ const n=needName(); if(!n) return; const code=$('#codeIn').value.trim();
   if(!/^\d{4}$/.test(code)){ $('#homeErr').textContent='房间号是 4 位数字'; return; }
   const old=store.get('md_s_'+code)||{};
-  try{ enter(await api('/api/join',{code,name:n,id:old.id,token:old.token})); }catch(e){ $('#homeErr').textContent=e.message; } };
+  try{ enter(await api('/api/join',{code,name:n,id:old.id,token:old.token})); }
+  catch(e){
+    if(e.data && e.data.canSpectate && confirm('这个房间正在游戏中。要以观战身份加入吗？\n观战可以看到两队的关键词和队内频道，但不能参与。')){
+      try{ enter(await api('/api/join',{code,name:n,spectate:true})); }catch(e2){ $('#homeErr').textContent=e2.message; }
+    } else $('#homeErr').textContent=e.message;
+  } };
 $('#codeIn').onkeydown = e=>{ if(e.key==='Enter') $('#joinBtn').click(); };
 
 function enter(s){
@@ -311,7 +316,7 @@ function enter(s){
 function goHome(msg){ if(es) es.close(); es=null; sess=null; S=null; history.replaceState(null,'',location.pathname);
   $('#home').hidden=false; $('#lobby').hidden=true; $('#game').hidden=true; $('#conn').hidden=true; $('#homeErr').textContent=msg||''; }
 (async()=>{ const code=urlCode||store.get('md_last'); const old=code&&store.get('md_s_'+code); if(!old) return;
-  try{ enter(await api('/api/join',{code,id:old.id,token:old.token,name:store.get('md_name')})); }catch(e){ store.del('md_s_'+code); store.del('md_last'); } })();
+  try{ enter(await api('/api/join',{code,id:old.id,token:old.token,name:store.get('md_name')})); }catch(e){ store.del('md_s_'+code); store.del('md_last'); $('#homeErr').textContent=e.message; } })();
 
 $('#leaveBtn').onclick = async()=>{ const s=sess; if(await act('leave')){ store.del('md_s_'+s.code); store.del('md_last'); goHome(); } };
 $('#inviteBtn').onclick = async()=>{ const link=location.origin+location.pathname+'?room='+sess.code;
@@ -339,8 +344,10 @@ function renderLobby(){
       ${m.map(memHTML).join('') || '<p class="muted small">还没有人</p>'}<span class="sp"></span>
       ${me.team===t ? `<button class="ghost" data-team="">离开${TN[t]}</button>` : `<button class="${t}b" data-team="${t}" ${m.length>=4?'disabled':''}>加入${TN[t]}</button>`}</div>`; };
   $('#teams').innerHTML = col('red') + col('blue');
-  const un = S.players.filter(p=>!p.team);
-  $('#unassigned').innerHTML = un.length ? `<span class="muted small">还没选队：</span>${un.map(p=>`<span class="badge" style="margin-right:4px">${esc(p.name)}</span>`).join('')}` : '';
+  const un = S.players.filter(p=>!p.team && !p.spectator), sp = S.players.filter(p=>p.spectator);
+  $('#unassigned').innerHTML = (un.length ? `<div><span class="muted small">还没选队：</span>${un.map(p=>`<span class="badge" style="margin-right:4px">${esc(p.name)}</span>`).join('')}</div>` : '')
+    + `<div class="row" style="margin-top:6px;flex-wrap:wrap"><span class="muted small">👀 观战：</span>${sp.map(memHTML).join('') || '<span class="muted small">无</span>'}<span class="sp"></span>
+      ${me.spectator ? '<span class="muted small">你正在观战，可以随时加入一支队伍</span>' : '<button class="ghost" data-team="spec">我要观战</button>'}</div>`;
   document.querySelectorAll('[data-team]').forEach(b=>b.onclick=()=>act('team',{team:b.dataset.team||null}));
 
   const st = S.settings;
@@ -359,10 +366,18 @@ function renderLobby(){
   b.onclick = ()=>act('start');
 }
 function memHTML(p){
-  return `<div class="mem"><span class="dot ${p.online?'':'off'}"></span><b>${esc(p.name)}</b>${p.id===S.you?'<span class="muted small">（你）</span>':''}${p.id===S.host?'<span class="badge gold">房主</span>':''}</div>`;
+  return `<div class="mem"><span class="dot ${p.online?'':'off'}"></span><b>${esc(p.name)}</b>${p.id===S.you?'<span class="muted small">（你）</span>':''}${p.id===S.host?'<span class="badge gold">房主</span>':''}${unlockBtn(p)}</div>`;
 }
+// 房主可以为掉线的玩家“允许换设备”（5 分钟内有效）
+function unlockBtn(p){
+  if(S.host!==S.you || p.id===S.you || p.online) return '';
+  return p.unlock ? '<span class="badge" title="5 分钟内可以用新设备加入">已允许换设备</span>'
+    : `<button class="ghost small" style="padding:1px 7px" data-unlock="${p.id}" title="这位玩家换了手机或网络时使用">允许换设备</button>`;
+}
+document.addEventListener('click', e=>{ const b=e.target.closest('[data-unlock]'); if(b) act('unlock',{target:b.dataset.unlock}).then(ok=>{ if(ok) toast('已允许：请让 TA 在 5 分钟内用原来的名字重新加入'); }); });
 
 function renderGame(){
+  if(S.spectator) return renderSpectator();
   const my=S.myTeam, T=S.teams[my], O=S.teams[OT(my)], enc = T.encoder===S.you;
   $('#gCode').textContent = S.code;
   $('#gRound').innerHTML = `第 <b>${S.round}</b> / ${S.maxRounds} 轮`;
@@ -371,20 +386,13 @@ function renderGame(){
 
   // 关键词
   $('#wordsTitle').innerHTML = `${tag(my)} 我方关键词`;
+  $('#wordsHint').textContent = '只有你的队友能看到这 4 个词。';
   $('#myWords').innerHTML = T.words.map((w,i)=>`<div class="word ${my}"><div class="no">#${i+1}</div><div class="w">${esc(w)}</div></div>`).join('');
 
-  // 比分
-  const pips = (n,cls,sym) => [0,1].map(i=>`<span class="pip ${cls} ${i<n?'on':''}">${i<n?sym:''}</span>`).join('');
-  $('#score').innerHTML = ['red','blue'].map(t=>{ const k=S.teams[t].tokens;
-    return `<div class="sc ${t}"><div class="hd"><b class="${t}">${TN[t]}</b>${t===my?'<span class="muted small">我方</span>':''}</div>
-    <div class="tk ${k.intercept?'hotw':''}">拦截 ${pips(k.intercept,'w','✓')}<span class="cnt">${k.intercept}/2</span></div>
-    <div class="tk ${k.miss?'hotk':''}">失误 ${pips(k.miss,'k','✗')}<span class="cnt">${k.miss}/2</span></div>
-    <div class="flags">${S.phase!=='end' && k.miss===1 ? '<div class="danger">再失误 1 次就输</div>' : ''}${S.phase!=='end' && k.miss>=2 ? '<div class="danger">已失误 2 次，本轮结束后判定</div>' : ''}${S.phase!=='end' && k.intercept===1 ? '<div class="chance">再拦截 1 次就赢</div>' : ''}${S.phase!=='end' && k.intercept>=2 ? '<div class="chance">已拦截 2 次，本轮结束后判定</div>' : ''}</div></div>`; }).join('');
+  renderScore(my);
 
   // 玩家
-  $('#plist').innerHTML = ['red','blue'].map(t=>`<div style="margin-bottom:6px"><div class="small ${t}" style="font-weight:700">${TN[t]}</div>`+
-    S.players.filter(p=>p.team===t).map(p=>`<div class="mem"><span class="dot ${p.online?'':'off'}"></span>${esc(p.name)}${p.id===S.you?'<span class="muted small">（你）</span>':''}
-      ${S.teams[t].encoder===p.id && S.phase!=='end'?'<span class="badge gold">加密者</span>':''}${S.phase==='reveal'&&p.ready?'<span class="badge">✓</span>':''}</div>`).join('')+'</div>').join('');
+  renderPlayers();
 
   // 阶段
   const key = S.phase+S.round;
@@ -401,6 +409,54 @@ function renderGame(){
 
   renderChat();
   tick();
+}
+
+function renderScore(my){
+  const pips = (n,cls,sym) => [0,1].map(i=>`<span class="pip ${cls} ${i<n?'on':''}">${i<n?sym:''}</span>`).join('');
+  $('#score').innerHTML = ['red','blue'].map(t=>{ const k=S.teams[t].tokens;
+    return `<div class="sc ${t}"><div class="hd"><b class="${t}">${TN[t]}</b>${t===my?'<span class="muted small">我方</span>':''}</div>
+    <div class="tk ${k.intercept?'hotw':''}">拦截 ${pips(k.intercept,'w','✓')}<span class="cnt">${k.intercept}/2</span></div>
+    <div class="tk ${k.miss?'hotk':''}">失误 ${pips(k.miss,'k','✗')}<span class="cnt">${k.miss}/2</span></div>
+    <div class="flags">${S.phase!=='end' && k.miss===1 ? '<div class="danger">再失误 1 次就输</div>' : ''}${S.phase!=='end' && k.miss>=2 ? '<div class="danger">已失误 2 次，本轮结束后判定</div>' : ''}${S.phase!=='end' && k.intercept===1 ? '<div class="chance">再拦截 1 次就赢</div>' : ''}${S.phase!=='end' && k.intercept>=2 ? '<div class="chance">已拦截 2 次，本轮结束后判定</div>' : ''}</div></div>`; }).join('');
+}
+function renderPlayers(){
+  const sp = S.players.filter(p=>p.spectator);
+  $('#plist').innerHTML = ['red','blue'].map(t=>`<div style="margin-bottom:6px"><div class="small ${t}" style="font-weight:700">${TN[t]}</div>`+
+    S.players.filter(p=>p.team===t).map(p=>`<div class="mem"><span class="dot ${p.online?'':'off'}"></span>${esc(p.name)}${p.id===S.you?'<span class="muted small">（你）</span>':''}
+      ${S.teams[t].encoder===p.id && S.phase!=='end'?'<span class="badge gold">加密者</span>':''}${S.phase==='reveal'&&p.ready?'<span class="badge">✓</span>':''}${unlockBtn(p)}</div>`).join('')+'</div>').join('')
+    + (sp.length ? `<div><div class="small muted" style="font-weight:700">👀 观战</div>${sp.map(p=>`<div class="mem"><span class="dot ${p.online?'':'off'}"></span>${esc(p.name)}${p.id===S.you?'<span class="muted small">（你）</span>':''}${unlockBtn(p)}</div>`).join('')}</div>` : '');
+}
+
+// ---------- 观战 ----------
+function renderSpectator(){
+  $('#gCode').textContent = S.code;
+  $('#gRound').innerHTML = `第 <b>${S.round}</b> / ${S.maxRounds} 轮`;
+  $('#gPhase').innerHTML = {clue:'<b>加密阶段</b>', guess:`<b>破译：${TN[S.cur]||''}的密码</b>`, reveal:'<b>揭晓</b>', end:'<b>游戏结束</b>'}[S.phase] + ' · 👀 观战中';
+  $('#abortBtn').hidden = true;
+  $('#wordsTitle').innerHTML = '👀 两队关键词';
+  $('#wordsHint').textContent = '你在观战：能看到两队的词，玩家们看不到对方的词。';
+  $('#myWords').innerHTML = ['red','blue'].map(t=>S.teams[t].words.map((w,i)=>`<div class="word ${t}"><div class="no">${TN[t]} #${i+1}</div><div class="w">${esc(w)}</div></div>`).join('')).join('');
+  renderScore(null);
+  renderPlayers();
+  const st=$('#stage');
+  if(S.phase==='clue') st.innerHTML = `<h3 style="font-size:18px;margin-bottom:6px">加密阶段</h3>` + ['red','blue'].map(t=>{ const X=S.teams[t];
+      return `<p>${tag(t)} 加密者 <b>${pName(X.encoder)}</b>：${X.cluesIn?'已交提示 ✓':'正在写提示…'}</p>`; }).join('');
+  else if(S.phase==='guess') st.innerHTML = specGuessHTML();
+  else if(S.phase==='reveal'){ const h=S.history[S.history.length-1];
+    st.innerHTML = `<h3 style="font-size:18px;margin-bottom:8px">第 ${h.round} 轮揭晓</h3><div class="rv">${resultCard('red',h.red)}${resultCard('blue',h.blue)}</div><p class="muted small" style="margin:10px 0 0">等待玩家进入下一轮…</p>`; }
+  else st.innerHTML = endHTML();
+  bindStage(null,false);
+  $('#sheets').innerHTML = sheetHTML('red', true) + sheetHTML('blue', true);
+  renderChat();
+  tick();
+}
+function specGuessHTML(){
+  const cur=S.cur, X=S.teams[cur], first = S.round%2===1 ? 'red' : 'blue', second = OT(first);
+  const steps = `<div class="steps">${[first,second].map((t,i)=>`<span class="stp ${t} ${t===cur?'on':''} ${S.roundRec&&S.roundRec[t]?'done':''}">${i+1}. ${TN[t]}的密码${S.roundRec&&S.roundRec[t]?' ✓':''}</span>`).join('<span class="muted">→</span>')}</div>`;
+  const prev = S.roundRec && S.roundRec[OT(cur)] ? `<p class="muted small" style="margin:0 0 6px">上一个密码的结果</p>${resultCard(OT(cur), S.roundRec[OT(cur)])}<div style="height:12px"></div>` : '';
+  const block = `<div class="gblock ${cur}"><h4>${tag(cur)} 的提示</h4>${X.clues.map((c,i)=>`<div class="gline"><span class="i">${i+1}</span><span class="c">${esc(c)}</span></div>`).join('')}</div>`;
+  const status = `<p class="muted small" style="margin:6px 0 0">${TN[cur]}破译：${X.locked?'已锁定 ✓':'讨论中…'}${S.round>=2?`　·　${TN[OT(cur)]}拦截：${S.teams[OT(cur)].locked?'已锁定 ✓':'讨论中…'}`:'　·　第一轮没有拦截'}</p>`;
+  return steps + prev + block + status;
 }
 
 function clueHTML(T,O,enc){
@@ -466,7 +522,7 @@ function guessHTML(T,O,enc){
 
 function revealHTML(){
   const h = S.history[S.history.length-1];
-  const online = S.players.filter(p=>p.online), ready = online.filter(p=>p.ready).length, me=P(S.you);
+  const online = S.players.filter(p=>p.online && !p.spectator), ready = online.filter(p=>p.ready).length, me=P(S.you);
   return `<h3 style="font-size:18px;margin-bottom:8px">第 ${h.round} 轮揭晓</h3><div class="rv">${resultCard(S.myTeam,h[S.myTeam])}${resultCard(OT(S.myTeam),h[OT(S.myTeam)])}</div>
     <div class="row" style="margin-top:12px"><button class="gold" id="nextBtn" ${me.ready?'disabled':''}>${me.ready?'已准备，等待其他人…':'看完了，进入下一轮'}</button>
     <span class="muted small">${ready}/${online.length} 人准备</span></div>`;
@@ -480,17 +536,17 @@ function endHTML(){
     : `${r.how==='both'?'两队在同一轮同时达成了胜负条件':'8 轮结束，仍未分出胜负'}，按“拦截数 − 失误数”比分：红队 ${r.score.red}，蓝队 ${r.score.blue}。`;
   const words = t => `<div class="rvc ${t}"><div class="row">${tag(t)}<span class="muted small">拦截 ${S.teams[t].tokens.intercept} · 失误 ${S.teams[t].tokens.miss}</span></div>
     <div class="words" style="margin-top:8px">${S.teams[t].words.map((w,i)=>`<div class="word ${t}"><div class="no">#${i+1}</div><div class="w">${esc(w)}</div></div>`).join('')}</div></div>`;
-  const res = r.winner ? (r.winner===my?'<span class="ok">我方胜利</span>':'<span class="no">我方失败</span>') : '';
+  const res = r.winner && my ? (r.winner===my?'<span class="ok">我方胜利</span>':'<span class="no">我方失败</span>') : '';
   return `<div class="banner ${r.winner||''}">${title}</div><p style="text-align:center;margin:0 0 4px">${res}</p>
     <p class="muted" style="text-align:center;margin:0 0 12px">${how}</p>
-    <div class="rv">${words(my)}${words(OT(my))}</div>
+    <div class="rv">${words(my||'red')}${words(OT(my||'red'))}</div>
     <div class="row" style="margin-top:12px"><span class="sp"></span>${S.host===S.you?'<button class="gold" id="againBtn">回到大厅，再来一局</button>':'<span class="muted small">等待房主开始下一局</span>'}</div>`;
 }
 
 function sheetHTML(t, showWords){
   const T=S.teams[t];
   const max = Math.max(1, ...T.sheet.map(c=>c.length));
-  return `<div><div class="row" style="margin-bottom:6px">${tag(t)}<span class="muted small">${t===S.myTeam?'我方':'对方'}</span></div>
+  return `<div><div class="row" style="margin-bottom:6px">${tag(t)}<span class="muted small">${S.spectator?'':t===S.myTeam?'我方':'对方'}</span></div>
     <table><tr>${[0,1,2,3].map(i=>`<th><span class="n">#${i+1}</span>${showWords&&T.words?`<span class="w">${esc(T.words[i])}</span>`:''}</th>`).join('')}</tr>
     <tr>${T.sheet.map(c=>`<td>${c.length?c.map(x=>`<div>${esc(x)}</div>`).join(''):'<span class="muted small">—</span>'}</td>`).join('')}</tr></table></div>`;
 }
@@ -523,13 +579,22 @@ renderGame = function(){
 
 // ---------- 聊天 ----------
 function renderChat(){
-  $('#chatTitle').innerHTML = `${tag(S.myTeam)} 队内频道 <span class="muted small">只有队友能看到</span>`;
+  const spec = S.spectator, list = spec ? (S.chatAll||[]) : S.chat;
+  $('#chatTitle').innerHTML = spec ? '👀 两队频道 <span class="muted small">观战只读</span>' : `${tag(S.myTeam)} 队内频道 <span class="muted small">只有队友能看到</span>`;
   const box=$('#msgs'), atBottom = box.scrollHeight-box.scrollTop-box.clientHeight<40;
-  box.innerHTML = S.chat.map(m => m.sys ? `<div class="msg sys">${esc(m.text)}</div>`
-    : `<div class="msg ${m.from===S.you?'me':''}">${m.from===S.you?'':`<div class="who">${esc(m.name)}</div>`}${esc(m.text)}</div>`).join('');
-  const newest = S.chat.length ? S.chat[S.chat.length-1].n : 0;
-  if(atBottom || newest>lastChat && S.chat[S.chat.length-1].from===S.you) box.scrollTop = box.scrollHeight;
+  box.innerHTML = list.map(m => m.sys ? `<div class="msg sys">${spec?tag(m.team)+' ':''}${esc(m.text)}</div>`
+    : `<div class="msg ${m.from===S.you?'me':''}">${m.from===S.you?'':`<div class="who">${spec?tag(m.team)+' ':''}${esc(m.name)}</div>`}${esc(m.text)}</div>`).join('');
+  const newest = list.length ? list[list.length-1].n : 0;
+  if(atBottom || newest>lastChat && list[list.length-1].from===S.you) box.scrollTop = box.scrollHeight;
   lastChat = newest;
+  // 发言权限
+  const T = S.myTeam && S.teams ? S.teams[S.myTeam] : null;
+  const muted = !spec && T && T.encoder===S.you && (S.phase==='clue' || (S.phase==='guess' && S.cur===S.myTeam));
+  const inp=$('#chatIn'), btn=$('#chatBtn');
+  inp.disabled = btn.disabled = spec || muted;
+  inp.placeholder = spec ? '观战中，不能发言' : muted ? '🔇 加密者现在不能发言' : '只有队友能看到…';
+  inp.title = muted ? '你是本轮加密者：加密阶段和破译本队密码时不能发言，拦截对方密码时可以' : '';
+  $('.chatin').hidden = spec;
 }
 async function sendChat(){ const t=$('#chatIn').value.trim(); if(!t) return; $('#chatIn').value=''; await act('chat',{text:t}); const b=$('#msgs'); b.scrollTop=b.scrollHeight; }
 $('#chatBtn').onclick = sendChat;
@@ -539,12 +604,18 @@ $('#chatIn').onkeydown = e=>{ if(e.key==='Enter' && !e.isComposing) sendChat(); 
 function tick(){
   const m0=$('#myTimer');
   if(!S || !['clue','guess'].includes(S.phase) || !S.teams){ $('#gTimer').hidden=true; if(m0) m0.textContent=''; return; }
-  const T=S.teams[S.myTeam];
-  const done = S.phase==='clue' ? T.cluesIn : T.locked;
-  if(!T.deadline || done){ $('#gTimer').hidden=true; if(m0) m0.textContent=''; return; }
-  const left = Math.max(0, Math.ceil((T.deadline - (Date.now()+offset))/1000));
-  $('#gTimer').hidden=false; $('#gTimer').innerHTML = `我方${S.phase==='clue'?'加密':(S.cur===S.myTeam?'破译':'拦截')}剩余 <b class="timer ${left<=10?'urgent':''}" style="font-size:13px">${left} 秒</b>`;
-  const m=$('#myTimer'); if(m){ m.textContent = `剩余 ${left} 秒`; m.classList.toggle('urgent', left<=10); }
+  const now = Date.now()+offset, parts=[];
+  for(const t of ['red','blue']){
+    const X=S.teams[t], done = S.phase==='clue' ? X.cluesIn : X.locked;
+    if(!X.deadline || done) continue;
+    const left = Math.max(0, Math.ceil((X.deadline - now)/1000));
+    const what = S.phase==='clue' ? '加密' : (S.cur===t ? '破译' : '拦截');
+    parts.push(`${TN[t]}${what}剩余 <b class="timer ${left<=10?'urgent':''}" style="font-size:13px">${left} 秒</b>`);
+    if(t===S.myTeam && m0){ m0.textContent = `剩余 ${left} 秒`; m0.classList.toggle('urgent', left<=10); }
+  }
+  $('#gTimer').hidden = !parts.length;
+  $('#gTimer').innerHTML = '⏱ ' + parts.join('　');
+  if(m0 && !parts.length) m0.textContent='';
 }
 setInterval(tick, 250);
 
@@ -559,7 +630,10 @@ function showRules(){
   <p><b>情报记录表：</b>每轮揭晓后，提示会自动记在对应关键词的那一列。对方的表看不到关键词，只能靠历次提示推理，这正是拦截的关键。</p>
   <p><b>提示规则：</b>提示要和词义相关，不能直接写关键词，也不要用谐音、字数、位置、颜色标记之类的暗号。加密者在本队破译时不要在聊天里给队友额外提示。</p>
   <p><b>计时（可选）：</b>房主开启后，加密和破译两个阶段都有时间限制。一队先交提示，另一队的加密者开始倒计时，时间到没写完的提示记为“（超时）”；处理每个密码时，破译方和拦截方谁先锁定，另一方就开始倒计时，时间到自动锁定当前答案，没选完整的部分算猜错。</p>
-  <p class="muted small">线上讨论请使用右侧的队内频道，避免在语音里被对方听到。</p>
+  <p><b>加密者禁言：</b>加密阶段，以及破译本队密码的时候，加密者不能在队内频道发言；拦截对方密码时可以正常讨论。</p>
+  <p><b>观战：</b>游戏进行中加入房间的人可以选择观战，能看到两队的关键词和两队的频道，但不能发言或操作。大厅里也可以点「我要观战」。</p>
+  <p><b>座位绑定：</b>每个座位只认原来的浏览器或网络。换了手机或网络回不来时，请房主在玩家列表里点「允许换设备」，然后 5 分钟内用原来的名字重新加入。</p>
+  <p class="muted small">线上讨论请使用右侧的队内频道，避免在语音里被对方听到。同一个房间连续玩，不会出现上一局用过的词。</p>
   <p style="text-align:right;margin:0"><button class="gold" id="closeRules">知道了</button></p>`;
   $('#mask').hidden=false; $('#closeRules').onclick=()=>$('#mask').hidden=true;
 }

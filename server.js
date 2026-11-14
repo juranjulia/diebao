@@ -8,7 +8,9 @@ const crypto = require('crypto');
 
 const PORT = Number(process.env.PORT) || 3000;
 const ROOM_TTL = 6 * 3600 * 1000;
-const MAX_PLAYERS = 8;
+const MAX_PLAYERS = 8;          // 参赛玩家上限（两队各 4 人）
+const MAX_MEMBERS = 16;         // 房间总人数上限（含观战）
+const UNLOCK_MS = 5 * 60 * 1000;  // 房主“允许换设备”的有效时间
 const MAX_ROUNDS = 8;
 const TEAM_MIN = 2, TEAM_MAX = 4;
 const TEAMS = ['red', 'blue'];
@@ -37,9 +39,41 @@ const fail = m => { throw new GameError(m); };
 const rooms = new Map();
 function newCode() { let c; do { c = String(1000 + crypto.randomInt(9000)); } while (rooms.has(c)); return c; }
 function cleanName(n) { n = String(n || '').trim().slice(0, 10); return n || '玩家'; }
-function newPlayer(name) { return { id: rid(), token: rid(), name: cleanName(name), team: null, ready: false, clients: new Set() }; }
+function newPlayer(name, info, spectator = false) {
+  const p = { id: rid(), token: rid(), name: cleanName(name), team: null, spectator, ready: false, clients: new Set(),
+    devs: new Set(), ips: new Set(), unlockUntil: 0 };
+  if (info.dev) p.devs.add(info.dev);
+  if (info.ip) p.ips.add(info.ip);
+  return p;
+}
+
+// ---------------- 设备绑定：座位只认原来的浏览器（Cookie）或原来的网络（IP） ----------------
+// Render 前面是 Cloudflare：True-Client-IP / CF-Connecting-IP 是真实客户端 IP，客户端无法伪造；
+// X-Forwarded-For 可以被伪造，不使用。
+function reqInfo(req) {
+  const h = req.headers;
+  const ip = String(h['true-client-ip'] || h['cf-connecting-ip'] || req.socket.remoteAddress || '').trim();
+  const m = /(?:^|;\s*)md_dev=([a-f0-9]{16,64})/.exec(h.cookie || '');
+  return { ip, dev: m ? m[1] : null, https: h['x-forwarded-proto'] === 'https' };
+}
+function devCookie(info) {
+  if (info.dev) return null;
+  info.dev = crypto.randomBytes(16).toString('hex');
+  return `md_dev=${info.dev}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax${info.https ? '; Secure' : ''}`;
+}
+// 同一浏览器或同一网络都算本人；房主点了“允许换设备”后 5 分钟内也放行。认出后记住新的浏览器和网络。
+function bound(p, info) {
+  const viaDev = info.dev && p.devs.has(info.dev), viaIp = info.ip && p.ips.has(info.ip);
+  const viaUnlock = p.unlockUntil > Date.now();
+  if (!viaDev && !viaIp && !viaUnlock) return false;
+  if (info.dev) p.devs.add(info.dev);
+  if (info.ip) p.ips.add(info.ip);
+  if (viaUnlock && !viaDev && !viaIp) p.unlockUntil = 0;
+  return true;
+}
 
 const members = (room, t) => room.players.filter(p => p.team === t);
+const isPlayer = p => !p.spectator;
 
 // ---------------- 对局 ----------------
 function newTeamState(words) {
@@ -52,7 +86,12 @@ function newTeamState(words) {
 }
 
 function startGame(room) {
-  const words = shuffle([...WORDS]).slice(0, 8);
+  // 同一个房间里玩很多局，不重复出现用过的词；词库用完才重新开始
+  room.used = room.used || new Set();
+  let avail = WORDS.filter(w => !room.used.has(w));
+  if (avail.length < 8) { room.used.clear(); avail = WORDS.slice(); }
+  const words = shuffle(avail).slice(0, 8);
+  words.forEach(w => room.used.add(w));
   room.teams = { red: newTeamState(words.slice(0, 4)), blue: newTeamState(words.slice(4, 8)) };
   room.chat = { red: [], blue: [] };
   room.history = [];
@@ -180,10 +219,10 @@ function stateFor(room, me) {
   const ended = room.phase === 'end';
   const teams = {};
   if (room.teams) for (const t of TEAMS) {
-    const T = room.teams[t], mine = me.team === t, enc = me.id === T.encoder;
+    const T = room.teams[t], mine = me.team === t, enc = me.id === T.encoder, spec = !!me.spectator;
     teams[t] = {
       tokens: T.tokens, sheet: T.sheet, encoder: T.encoder,
-      words: mine || ended ? T.words : null,
+      words: mine || ended || spec ? T.words : null,      // 观战者能看到两队的词
       code: (enc && ['clue', 'guess'].includes(room.phase)) || ['reveal', 'end'].includes(room.phase) || (room.phase === 'guess' && room.roundRec[t]) ? T.code : null,
       cluesIn: !!T.clues,
       // 提示按顺序公开：正在处理或已经处理过的密码才显示提示
@@ -195,14 +234,18 @@ function stateFor(room, me) {
     };
   }
   return {
-    code: room.code, phase: room.phase, host: room.hostId, you: me.id, myTeam: me.team,
+    code: room.code, phase: room.phase, host: room.hostId, you: me.id, myTeam: me.team, spectator: !!me.spectator,
     settings: room.settings, round: room.round, maxRounds: MAX_ROUNDS, now: Date.now(),
     cur: room.phase === 'guess' ? room.cur : null,
     roundRec: room.phase === 'guess' ? room.roundRec : null,
-    players: room.players.map(p => ({ id: p.id, name: p.name, team: p.team, online: p.clients.size > 0, ready: p.ready })),
+    players: room.players.map(p => ({ id: p.id, name: p.name, team: p.team, spectator: !!p.spectator, online: p.clients.size > 0,
+      ready: p.ready, unlock: p.unlockUntil > Date.now() })),
+    wordsLeft: WORDS.length - (room.used ? room.used.size : 0),
     teams: room.teams ? teams : null,
     history: room.history || [],
     chat: me.team && room.chat ? room.chat[me.team] : [],
+    // 观战者：两队频道合在一起只读
+    chatAll: me.spectator && room.chat ? TEAMS.flatMap(t => room.chat[t].map(m => ({ ...m, team: t }))).sort((a, b) => a.n - b.n).slice(-200) : null,
     result: room.result,
   };
 }
@@ -227,9 +270,10 @@ function act(room, p, a) {
   switch (a.type) {
     case 'team': {
       if (room.phase !== 'lobby' && room.phase !== 'end') fail('游戏进行中不能换队');
+      if (a.team === 'spec') { p.team = null; p.spectator = true; return; }
       const t = TEAMS.includes(a.team) ? a.team : null;
       if (t && t !== p.team && members(room, t).length >= TEAM_MAX) fail(`${TNAME[t]}已经满 ${TEAM_MAX} 人了`);
-      p.team = t; return;
+      p.team = t; p.spectator = false; return;
     }
     case 'settings':
       if (p.id !== room.hostId) fail('只有房主能修改设置');
@@ -240,12 +284,15 @@ function act(room, p, a) {
       if (p.id !== room.hostId) fail('只有房主能开始游戏');
       if (inGame) fail('游戏已经开始了');
       const nr = members(room, 'red').length, nb = members(room, 'blue').length;
-      if (room.players.some(x => !x.team)) fail('还有人没有选队');
+      if (room.players.some(x => !x.team && !x.spectator)) fail('还有人没有选队（也可以选择观战）');
       if (nr < TEAM_MIN || nb < TEAM_MIN) fail(`每队至少 ${TEAM_MIN} 人`);
       return startGame(room);
     }
     case 'chat': {
+      if (p.spectator) fail('观战中不能发言');
       if (!T || !room.chat) fail('选队并开始游戏后才能使用队内聊天');
+      if (T.encoder === p.id && (room.phase === 'clue' || (room.phase === 'guess' && room.cur === p.team)))
+        fail('你是本轮加密者：加密和破译本队密码期间不能在队内频道发言');
       const text = String(a.text || '').trim().slice(0, 200);
       if (!text) return;
       return pushChat(room, p.team, { from: p.id, name: p.name, text });
@@ -288,12 +335,12 @@ function act(room, p, a) {
       }
       return lockTeam(room, p.team, p.name);
     }
-    case 'unlock':
+    case 'unlockAnswer':
       fail('锁定后不能取消');
     case 'next': {
-      if (room.phase !== 'reveal') return;
+      if (room.phase !== 'reveal' || p.spectator) return;
       p.ready = true;
-      const online = room.players.filter(x => x.clients.size > 0);
+      const online = room.players.filter(x => isPlayer(x) && x.clients.size > 0);
       if (online.every(x => x.ready)) startRound(room);
       return;
     }
@@ -303,8 +350,15 @@ function act(room, p, a) {
       room.phase = 'lobby'; room.teams = null; room.chat = null; room.history = []; room.round = 0; room.result = null;
       room.players.forEach(x => { x.ready = false; });
       return;
+    case 'unlock': {
+      if (p.id !== room.hostId) fail('只有房主能操作');
+      const t = room.players.find(x => x.id === a.target);
+      if (!t || t === p) fail('请选择一名玩家');
+      t.unlockUntil = Date.now() + UNLOCK_MS;
+      return;
+    }
     case 'leave':
-      if (inGame) fail('游戏进行中不能离开，可以请房主结束本局');
+      if (inGame && !p.spectator) fail('游戏进行中不能离开，可以请房主结束本局');
       for (const res of p.clients) res.end();
       room.players = room.players.filter(x => x !== p);
       if (!room.players.length) { rooms.delete(room.code); return 'gone'; }
@@ -327,11 +381,13 @@ function json(res, code, obj) {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(obj));
 }
-function auth(b) {
+const LOCKED_MSG = '这个座位绑定在另一台设备或网络上。如果这就是你，请让房主在玩家列表里点「允许换设备」，然后在 5 分钟内重新加入。';
+function auth(b, info) {
   const room = rooms.get(String(b.code || ''));
   if (!room) return { err: [404, '房间不存在或已过期'] };
   const p = room.players.find(x => x.id === b.id && x.token === b.token);
   if (!p) return { err: [403, '你不在这个房间里'] };
+  if (!bound(p, info)) return { err: [403, LOCKED_MSG] };
   return { room, p };
 }
 
@@ -339,11 +395,12 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   try {
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
+      const info = reqInfo(req), ck = devCookie(info);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ...(ck ? { 'Set-Cookie': ck } : {}) });
       return res.end(HTML);
     }
     if (req.method === 'GET' && url.pathname === '/api/events') {
-      const a = auth(Object.fromEntries(url.searchParams));
+      const a = auth(Object.fromEntries(url.searchParams), reqInfo(req));
       if (a.err) { res.writeHead(a.err[0]); return res.end(); }
       res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform',
         'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
@@ -356,9 +413,11 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method !== 'POST') { res.writeHead(404); return res.end(); }
     const b = await readBody(req);
+    const info = reqInfo(req), ck = devCookie(info);
+    if (ck) res.setHeader('Set-Cookie', ck);
 
     if (url.pathname === '/api/create') {
-      const p = newPlayer(b.name);
+      const p = newPlayer(b.name, info);
       const room = { code: newCode(), hostId: p.id, players: [p], phase: 'lobby', settings: { timer: false, seconds: 60 },
         teams: null, chat: null, history: [], round: 0, result: null, cur: null, roundRec: null, seq: 0, timer: null, touched: Date.now() };
       rooms.set(room.code, room);
@@ -368,24 +427,32 @@ const server = http.createServer(async (req, res) => {
       const room = rooms.get(String(b.code || '').trim());
       if (!room) return json(res, 404, { error: '房间不存在或已过期' });
       const back = room.players.find(x => x.id === b.id && x.token === b.token);
-      if (back) return json(res, 200, { code: room.code, id: back.id, token: back.token });
-      // 用原来的名字找回座位（浏览器丢失了登录信息时），优先匹配掉线的人
+      if (back) {
+        if (!bound(back, info)) return json(res, 403, { error: LOCKED_MSG });
+        return json(res, 200, { code: room.code, id: back.id, token: back.token });
+      }
+      // 用原来的名字找回座位（浏览器丢了登录信息时）：只有同一浏览器、同一网络，或房主允许换设备时才行
       const nm = cleanName(b.name);
       const inGame = ['clue', 'guess', 'reveal'].includes(room.phase);
-      const seat = room.players.find(x => x.name === nm && !x.clients.size) || (inGame && room.players.find(x => x.name === nm));
+      const sameName = room.players.filter(x => x.name === nm);
+      const seat = sameName.find(x => !x.clients.size && bound(x, info)) || sameName.find(x => bound(x, info));
       if (seat) return json(res, 200, { code: room.code, id: seat.id, token: seat.token });
-      if (inGame) {
-        const off = room.players.filter(x => !x.clients.size).map(x => `「${x.name}」`);
-        return json(res, 409, { error: off.length ? `游戏已经开始了。如果你是掉线的玩家，请填写原来的名字再点加入：${off.join('、')}` : '这个房间的游戏已经开始了' });
+      if (sameName.length) return json(res, 409, { error: `「${nm}」这个名字已经有人在用了。如果那就是你（比如换了手机或网络），请让房主在玩家列表里为你点「允许换设备」，然后 5 分钟内重新加入；否则请换一个名字。` });
+      if (room.players.length >= MAX_MEMBERS) return json(res, 409, { error: '房间人数已满' });
+      if (inGame || room.phase === 'end') {
+        if (!b.spectate) return json(res, 409, { error: '这个房间正在游戏中，可以选择观战。', canSpectate: true });
+        const p = newPlayer(b.name, info, true);
+        room.players.push(p);
+        broadcast(room);
+        return json(res, 200, { code: room.code, id: p.id, token: p.token });
       }
-      if (room.players.length >= MAX_PLAYERS) return json(res, 409, { error: `房间已满（最多 ${MAX_PLAYERS} 人）` });
-      const p = newPlayer(b.name);
+      const p = newPlayer(b.name, info);
       room.players.push(p);
       broadcast(room);
       return json(res, 200, { code: room.code, id: p.id, token: p.token });
     }
     if (url.pathname === '/api/action') {
-      const a = auth(b);
+      const a = auth(b, info);
       if (a.err) return json(res, a.err[0], { error: a.err[1] });
       let r;
       try { r = act(a.room, a.p, b); }
